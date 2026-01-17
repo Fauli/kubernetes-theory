@@ -8,6 +8,12 @@
 
 ---
 
+# What is an Operator?
+
+![What are Operators](images/what-are-operators.png)
+
+---
+
 # Kubernetes is a Declarative API
 
 Kubernetes is **not** a system where users execute steps.
@@ -56,15 +62,23 @@ Correctness is defined by **state**, not by events.
 
 # GVK vs GVR
 
+**Why this matters:** You'll use both, and mixing them up causes confusing errors.
+
 **GVK** (Group, Version, Kind):
 - Defines the schema and meaning of an object
-- Used in YAML manifests and OpenAPI schemas
+- Used in YAML manifests: `kind: Deployment`
 - Example: `apps/v1 Deployment`
 
 **GVR** (Group, Version, Resource):
-- Defines the REST endpoint
-- Used by informers, watches, and RBAC
+- Defines the REST endpoint (usually lowercase plural of Kind)
+- Used by informers, RBAC, and API paths
 - Example: `apps/v1/deployments`
+
+```
+YAML uses Kind:     kind: Deployment
+RBAC uses Resource: resources: ["deployments"]
+API path:           /apis/apps/v1/namespaces/default/deployments
+```
 
 Controllers and informers operate on **resources**, not kinds.
 
@@ -116,6 +130,20 @@ Controllers **must** use UID for ownership and identity comparisons.
 **status.observedGeneration**:
 - Indicates whether status reflects the current spec
 - Controllers must update this to avoid lying status
+
+<small>New APIs should use spec, not annotations, for configuration.</small>
+
+---
+
+# Quick Check: Objects and Identity
+
+**Q1:** A controller uses `name` instead of `UID` to track ownership. What can go wrong?
+
+**Q2:** Your controller checks if it already processed a spec change. Should it compare `resourceVersion` or `generation`?
+
+Note:
+A1: If the resource is deleted and recreated with the same name, the controller thinks it owns the new resource (but it doesn't — different UID).
+A2: Use `generation`. Compare `status.observedGeneration` with `metadata.generation` to detect unprocessed spec changes. `resourceVersion` changes on every write (including status), causing unnecessary reconciles.
 
 ---
 
@@ -200,9 +228,17 @@ Controllers must explicitly handle this state.
 
 Finalizers prevent deletion until cleanup is complete.
 
+**Scenario:** Your CRD provisions an S3 bucket. User deletes the CRD.
+- Without finalizer → bucket orphaned forever, costs money
+- With finalizer → controller deletes bucket first, then allows CRD removal
+
 **Required for:**
 - External resource cleanup (cloud resources, DNS records)
 - Ordered teardown of dependencies
+
+---
+
+# Finalizers
 
 **The full pattern:**
 ```go
@@ -264,6 +300,21 @@ Ownership mistakes cause **mass deletion** or **resource leaks**.
 
 ---
 
+# Quick Check: Object Lifecycle
+
+**Q1:** An object has `deletionTimestamp` set but still exists. Why?
+
+**Q2:** Can a Pod in namespace "dev" be owned by a Deployment in namespace "prod"?
+
+**Q3:** You delete a Deployment. Its Pods disappear 30 seconds later. Why the delay?
+
+Note:
+A1: Finalizers are blocking deletion. The controller hasn't finished cleanup yet.
+A2: No. ownerReferences cannot cross namespaces.
+A3: Garbage collection is asynchronous (Background propagation by default).
+
+---
+
 # Part 5: The Controller Runtime
 
 ---
@@ -287,6 +338,9 @@ API Server → Informer → Local Cache → Controller
 - Cache may be stale
 - Writes go to API server, reads from cache
 - Watch bookmark events help maintain consistency
+
+Note:
+Bookmark events are periodic events from the API server containing only a resourceVersion (no object data). They keep the client's "last seen" resourceVersion fresh even during quiet periods. Without bookmarks, if no objects change for hours, your resourceVersion becomes stale. When the watch breaks, etcd may have compacted that old version → 410 Gone → expensive full re-LIST.
 
 ---
 
@@ -338,6 +392,65 @@ Event: Pod A deleted     ┘
 | `Result{RequeueAfter: 5m}, nil` | Requeue after duration |
 | `Result{}, err` | Requeue with exponential backoff |
 
+---
+
+# Workqueue Internals
+
+The workqueue uses 3 data structures:
+
+| Structure | Type | Purpose |
+|-----------|------|---------|
+| **queue** | FIFO | Items waiting to be processed |
+| **dirty** | Set | Items that need processing (deduplication) |
+| **processing** | Set | Items currently being worked on |
+
+**How it works:**
+1. Event arrives → key added to `dirty` (deduped), added to `queue` if not in `processing`
+2. Worker calls `Get()` → key removed from `dirty`, moved to `processing`
+3. Worker calls `Done()` → if key in `dirty` (event arrived during processing), re-queue it
+
+```
+Event: Pod A updated  → dirty: {A}, queue: [A], processing: {}
+Worker takes A        → dirty: {}, queue: [], processing: {A}
+Event: Pod A updated  → dirty: {A}, queue: [], processing: {A}  # Not queued!
+Worker done with A    → dirty: {}, queue: [A], processing: {}   # Re-queued
+```
+
+Notes:
+  Line 1: Event: Pod A updated → dirty: {A}, queue: [A], processing: {}                     
+  - Add(A) is called                                                                        
+  - A added to dirty set                                                                    
+  - A not in processing, so also added to queue                                             
+                                                                                            
+  Line 2: Worker takes A → dirty: {}, queue: [], processing: {A}                            
+  - Get() is called                                                                         
+  - A removed from queue                                                                    
+  - A removed from dirty                                                                    
+  - A added to processing                                                                   
+                                                                                            
+  Line 3: Event: Pod A updated → dirty: {A}, queue: [], processing: {A}                     
+  - Add(A) is called again                                                                  
+  - A added to dirty set                                                                    
+  - A is in processing, so NOT added to queue                                               
+                                                                                            
+  Line 4: Worker done with A → dirty: {}, queue: [A], processing: {}                        
+  - Done(A) is called                                                                       
+  - A removed from processing                                                               
+  - Check: is A in dirty? Yes → so A is re-added to queue AND removed from dirty            
+                                                                                            
+  The answer: In line 4, Done() removes A from dirty when it re-queues it. This is the same 
+  behavior as Get() — when you move a key to the queue for processing, you clear its "dirty"
+   flag.                                                                                    
+                                                                                            
+  The example is correct, but the explanation could be clearer. The Done() logic is         
+  essentially:                                                                              
+  func (q *Queue) Done(key) {                                                               
+      q.processing.Delete(key)                                                              
+      if q.dirty.Has(key) {                                                                 
+          q.dirty.Delete(key)  // ← This is why dirty is empty in line 4                    
+          q.queue.Add(key)                                                                  
+      }                                                                                     
+  }    
 ---
 
 # Part 6: Writing Reconcile
@@ -459,6 +572,21 @@ obj.Status.ObservedGeneration = obj.Generation
 ```
 
 Spec defines intent. Status reports reality.
+
+---
+
+# Quick Check: Writing Reconcile
+
+**Q1:** Your controller receives 10 events for the same Pod in 1 second. How many Reconcile calls?
+
+**Q2:** Your Reconcile increments a counter each call to track "retries". After a pod restart, the counter is 0 but the object still exists. What went wrong?
+
+**Q3:** Reconcile returns `Result{Requeue: true}` in a loop. What happens?
+
+Note:
+A1: Just 1 (probably). Workqueue deduplicates by key — multiple events collapse.
+A2: Reconcile must be stateless. In-memory state is lost on restart. Use status or annotations to persist state.
+A3: Hot loop! CPU spins. Use `RequeueAfter` or return an error for backoff instead.
 
 ---
 

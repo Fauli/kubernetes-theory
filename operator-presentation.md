@@ -2,6 +2,8 @@
 ### From YAML to Reconciliation
 #### A Deep Dive for Future Operator Developers
 
+![Otterator](images/ottertor.png)
+
 ---
 
 # Part 1: The Kubernetes Philosophy

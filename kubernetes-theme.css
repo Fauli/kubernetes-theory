@@ -327,6 +327,12 @@ html, body, .reveal-viewport {
   opacity: 0.9;
 }
 
+.reveal .slides > section:first-child img {
+  max-height: 200px !important;
+  width: auto !important;
+  margin-top: 1em !important;
+}
+
 .reveal h1, .reveal h2 {
   text-transform: none;
 }

@@ -498,57 +498,6 @@ It must:
 
 Reconcile must tolerate retries and partial failure.
 
-<!-- 
----
-
-
-# Handling Conflicts
-
-Concurrent updates cause `409 Conflict` errors. This is normal.
-
-**Solution 1: Retry on conflict**
-```go
-err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-    if err := r.Get(ctx, key, &obj); err != nil {
-        return err
-    }
-    obj.Spec.Field = newValue
-    return r.Update(ctx, &obj)
-})
-```
-
-**Solution 2: Server-Side Apply (preferred)**
-```go
-obj.Spec.Field = newValue
-err := r.Patch(ctx, &obj, client.Apply, client.FieldOwner("my-controller"))
-```
-
-**Never** store resourceVersion and reuse it across reconciles.
-
----
-
-# Server-Side Apply (SSA)
-
-The modern way to update resources. Avoids many conflict issues.
-
-**Benefits:**
-- Automatic conflict detection per field
-- Multiple controllers can own different fields
-- No need to read-modify-write
-
-```go
-// Declare only the fields you care about
-desired := &corev1.ConfigMap{
-    ObjectMeta: metav1.ObjectMeta{Name: "my-cm", Namespace: "default"},
-    Data:       map[string]string{"key": "value"},
-}
-err := r.Patch(ctx, desired, client.Apply,
-    client.FieldOwner("my-controller"),
-    client.ForceOwnership)
-```
-
-**Recommendation:** Use SSA for creating/updating owned resources. -->
-
 ---
 
 # Status and Conditions
@@ -655,12 +604,12 @@ Leader election uses a Lease object in the cluster.
 
 ```
 YAML → API Server → etcd → Watch → Informer → Queue → Reconcile
-                                                           ↓
-                                              Compare spec vs reality
-                                                           ↓
-                                              Make idempotent changes
-                                                           ↓
-                                              Update status
+                                                                        ↓
+                                                            Compare spec vs reality
+                                                                        ↓
+                                                            Make idempotent changes
+                                                                        ↓
+                                                                  Update status
 ```
 
 You don't write event handlers.
@@ -670,4 +619,89 @@ You write a function that makes reality match intent.
 
 # Questions?
 
+---
+
+# Appendix
+
+---
+
+# Handling Conflicts
+
+Concurrent updates cause `409 Conflict` errors. This is normal.
+
+**Solution 1: Retry on conflict**
+```go
+err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+    if err := r.Get(ctx, key, &obj); err != nil {
+        return err
+    }
+    obj.Spec.Field = newValue
+    return r.Update(ctx, &obj)
+})
+```
+
+**Solution 2: Server-Side Apply (preferred)**
+```go
+obj.Spec.Field = newValue
+err := r.Patch(ctx, &obj, client.Apply, client.FieldOwner("my-controller"))
+```
+
+**Never** store resourceVersion and reuse it across reconciles.
+
+---
+
+# Server-Side Apply (SSA)
+
+The modern way to update resources. Avoids many conflict issues.
+
+**Benefits:**
+- Automatic conflict detection per field
+- Multiple controllers can own different fields
+- No need to read-modify-write
+
+```go
+// Declare only the fields you care about
+desired := &corev1.ConfigMap{
+    ObjectMeta: metav1.ObjectMeta{Name: "my-cm", Namespace: "default"},
+    Data:       map[string]string{"key": "value"},
+}
+err := r.Patch(ctx, desired, client.Apply,
+    client.FieldOwner("my-controller"),
+    client.ForceOwnership)
+```
+
+**Recommendation:** Use SSA for creating/updating owned resources. 
+
+Notes: 
+Why SSA reduces conflicts
+
+With SSA, if:
+- your controller owns `.spec.fieldA`
+- another controller owns `.spec.fieldB`
+Both can update independently without clobbering each other.
+Conflicts occur only if two managers try to own the same field.
+
+When to use which
+Use RetryOnConflict when:
+- you are doing classic Update() on a resource you fully control
+- you need to compute a new value based on the latest full object
+- SSA is not practical (rare today)
+
+Use SSA (preferred) when:
+- creating/updating child resources your controller owns
+- you want to avoid clobbering unrelated fields
+- you want safer multi-writer behavior
+
+A very practical controller guideline
+
+For owned child objects (Deployments/Services/ConfigMaps you create):
+
+- Use SSA apply patch
+- Use a stable field manager name
+- Use ForceOwnership only if you truly own the object
+
+For updating the parent CR status:
+
+Prefer Status().Patch(...) (often merge patch), and handle conflicts normally
+(SSA for status is possible but less commonly used depending on patterns)
 ---

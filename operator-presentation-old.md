@@ -86,22 +86,6 @@ Controllers **must** use UID for ownership and identity comparisons.
 
 ---
 
-# Namespace-Scoped vs Cluster-Scoped
-
-**Namespace-scoped:** Pods, Services, Deployments, ConfigMaps
-- Isolated within a namespace
-- Name uniqueness only within namespace
-
-**Cluster-scoped:** Nodes, Namespaces, ClusterRoles, PVs
-- Global across the cluster
-- Name must be globally unique
-
-**Important for operators:**
-- Your CRD can be either — choose based on use case
-- Cluster-scoped operators need cluster-wide RBAC
-
----
-
 # resourceVersion vs generation
 
 **resourceVersion**:
@@ -110,7 +94,7 @@ Controllers **must** use UID for ownership and identity comparisons.
 - Must **never** be stored or reused
 
 **generation**:
-- Increments only when spec changes (not all fields — some are excluded)
+- Increments only when spec changes
 - Allows controllers to detect meaningful changes
 
 **status.observedGeneration**:
@@ -130,21 +114,19 @@ Every request follows this pipeline:
 ```
 Request
    ↓
-Authentication       → Who is this?
+Authentication      → Who is this?
    ↓
-Authorization        → Can they do this? (RBAC)
+Authorization       → Can they do this? (RBAC)
    ↓
-Conversion           → Convert between CRD versions (if needed)
-   ↓
-Mutating Admission   → Modify the request (webhooks, defaults)
+Mutating Admission  → Modify the request (webhooks, defaults)
    ↓
 Validating Admission → Reject invalid requests (webhooks)
    ↓
-Schema Validation    → Does it match the CRD/type?
+Schema Validation   → Does it match the CRD/type?
    ↓
-Persistence          → Write to etcd
+Persistence         → Write to etcd
    ↓
-Watch Notifications  → Inform all watchers
+Watch Notifications → Inform all watchers
 ```
 
 Controllers only see objects that successfully reach etcd.
@@ -204,25 +186,19 @@ Finalizers prevent deletion until cleanup is complete.
 - External resource cleanup (cloud resources, DNS records)
 - Ordered teardown of dependencies
 
-**The full pattern:**
-```go
-// 1. Add finalizer on create (if not present)
-if !controllerutil.ContainsFinalizer(obj, myFinalizer) {
-    controllerutil.AddFinalizer(obj, myFinalizer)
-    return r.Update(ctx, obj)
-}
+**Critical rules:**
+- Finalizers **must** always be removable
+- Failure to remove finalizers causes stuck objects
+- Stuck objects cause stuck namespaces
 
-// 2. Handle deletion
+```go
+// Always check deletion first in Reconcile
 if !obj.DeletionTimestamp.IsZero() {
-    if err := r.cleanupExternalResources(obj); err != nil {
-        return ctrl.Result{}, err
-    }
-    controllerutil.RemoveFinalizer(obj, myFinalizer)
-    return ctrl.Result{}, r.Update(ctx, obj)
+    // Clean up external resources
+    // Remove finalizer
+    return ctrl.Result{}, nil
 }
 ```
-
-Finalizers **must** always be removable. Stuck finalizers = stuck namespaces.
 
 ---
 
@@ -232,35 +208,17 @@ OwnerReferences define lifecycle dependency.
 
 **Rules:**
 - Ownership is bound by **UID**, not name
-- Only **one** controller owner is allowed (`controller: true`)
+- Only **one** controller owner is allowed
 - Garbage collection is **asynchronous**
-- **ownerReferences cannot cross namespaces**
 
 **Propagation policies:**
 | Policy | Behavior |
 |--------|----------|
 | `Background` | Delete owner, GC deletes children later |
-| `Foreground` | Children deleted first, then owner (requires `blockOwnerDeletion: true`) |
+| `Foreground` | Children deleted first, then owner |
 | `Orphan` | Children survive owner deletion |
 
 Ownership mistakes cause **mass deletion** or **resource leaks**.
-
----
-
-# Orphaning and Adopting Resources
-
-**Orphaning:** Resources without an owner (or owner deleted with `Orphan` policy)
-- Orphaned resources continue to exist but are no longer managed
-- Can cause resource leaks if not cleaned up manually
-
-**Adoption:** Controller claims ownership of existing resources
-- Done by adding `ownerReferences` to orphaned objects
-- Used by ReplicaSet to adopt matching Pods it didn't create
-
-**Dangers of adoption:**
-- Broad label selectors can accidentally adopt unrelated resources
-- Adopted resources get deleted when the owner is deleted
-- Multiple controllers fighting over the same resource
 
 ---
 
@@ -274,8 +232,8 @@ Controllers never read directly from the API server.
 
 ```
 API Server → Informer → Local Cache → Controller
-                           ↑
-          LIST + WATCH
+   .   .   .    ↑
+           LIST + WATCH
 ```
 
 **Benefits:**
@@ -287,31 +245,6 @@ API Server → Informer → Local Cache → Controller
 - Cache may be stale
 - Writes go to API server, reads from cache
 - Watch bookmark events help maintain consistency
-
----
-
-# Watching Secondary Resources
-
-Controllers often need to react to changes in resources they don't own.
-
-**Example:** Reconcile your CRD when a referenced Secret changes.
-
-```go
-// In SetupWithManager
-ctrl.NewControllerManagedBy(mgr).
-    For(&myv1.MyCRD{}).
-    Watches(
-        &corev1.Secret{},
-        handler.EnqueueRequestsFromMapFunc(r.findCRDsForSecret),
-    )
-
-func (r *Reconciler) findCRDsForSecret(ctx context.Context,
-    secret client.Object) []reconcile.Request {
-    // Return list of MyCRD objects that reference this secret
-}
-```
-
-Essential for cross-resource dependencies.
 
 ---
 
@@ -328,15 +261,9 @@ Event: Pod A deleted     ┘
 **Properties:**
 - Multiple events collapse into one reconcile
 - A key is processed by only one worker at a time
-- Retries use **exponential backoff** (5s, 10s, 20s... up to 16min)
+- Retries are rate-limited per key
 
-**Requeue behaviors:**
-| Return | Behavior |
-|--------|----------|
-| `Result{}, nil` | Done, no requeue |
-| `Result{Requeue: true}, nil` | Immediate requeue (danger: hot loop!) |
-| `Result{RequeueAfter: 5m}, nil` | Requeue after duration |
-| `Result{}, err` | Requeue with exponential backoff |
+This prevents hot loops and overload.
 
 ---
 
@@ -379,62 +306,16 @@ It must:
 4. Update status
 5. Handle deletion (check `deletionTimestamp`)
 
-**Critical:** Reconcile must be **stateless**.
-- Don't store state between reconciles
-- Always re-read from cache
-- Each call should work independently
+```go
+// Reconcile contract
+func Reconcile(ctx, req) (Result, error)
+    Result{} + nil         → success, done
+    Result{Requeue: true}  → requeue immediately
+    Result{RequeueAfter: d} → requeue after duration
+    Result{} + error       → requeue with backoff
+```
 
 Reconcile must tolerate retries and partial failure.
-
----
-
-
-<!-- # Handling Conflicts
-
-Concurrent updates cause `409 Conflict` errors. This is normal.
-
-**Solution 1: Retry on conflict**
-```go
-err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-    if err := r.Get(ctx, key, &obj); err != nil {
-        return err
-    }
-    obj.Spec.Field = newValue
-    return r.Update(ctx, &obj)
-})
-```
-
-**Solution 2: Server-Side Apply (preferred)**
-```go
-obj.Spec.Field = newValue
-err := r.Patch(ctx, &obj, client.Apply, client.FieldOwner("my-controller"))
-```
-
-**Never** store resourceVersion and reuse it across reconciles.
-
----
-
-# Server-Side Apply (SSA)
-
-The modern way to update resources. Avoids many conflict issues.
-
-**Benefits:**
-- Automatic conflict detection per field
-- Multiple controllers can own different fields
-- No need to read-modify-write
-
-```go
-// Declare only the fields you care about
-desired := &corev1.ConfigMap{
-    ObjectMeta: metav1.ObjectMeta{Name: "my-cm", Namespace: "default"},
-    Data:       map[string]string{"key": "value"},
-}
-err := r.Patch(ctx, desired, client.Apply,
-    client.FieldOwner("my-controller"),
-    client.ForceOwnership)
-```
-
-**Recommendation:** Use SSA for creating/updating owned resources. -->
 
 ---
 
@@ -444,51 +325,25 @@ Status is **output only**.
 
 Controllers must:
 - Report progress and failures
-- Use conditions consistently (use `meta.SetStatusCondition`)
+- Use conditions consistently
 - **Never** drive behavior from status
 
-```go
-meta.SetStatusCondition(&obj.Status.Conditions, metav1.Condition{
-    Type:               "Ready",
-    Status:             metav1.ConditionTrue,
-    Reason:             "AllReplicasAvailable",
-    Message:            "3/3 replicas are ready",
-    ObservedGeneration: obj.Generation,
-})
-obj.Status.ObservedGeneration = obj.Generation
+```yaml
+status:
+  observedGeneration: 5    # Matches metadata.generation
+  conditions:
+    - type: Ready
+      status: "True"
+      lastTransitionTime: "2024-01-15T10:00:00Z"
+      reason: AllReplicasAvailable
+      message: "3/3 replicas are ready"
 ```
 
 Spec defines intent. Status reports reality.
 
 ---
 
-# Part 7: Production Concerns
-
----
-
-# Leader Election
-
-Operators typically run multiple replicas for HA.
-**Only one should reconcile at a time.**
-
-```go
-// In main.go
-mgr, err := ctrl.NewManager(cfg, ctrl.Options{
-    LeaderElection:   true,
-    LeaderElectionID: "my-operator-lock",
-})
-```
-
-**Without leader election:**
-- Multiple instances reconcile the same objects
-- Race conditions and conflicts
-- Duplicate external resource creation
-
-Leader election uses a Lease object in the cluster.
-
----
-
-# Part 8: Failure Modes
+# Part 7: Failure Modes
 
 ---
 
@@ -503,10 +358,39 @@ Leader election uses a Lease object in the cluster.
 | Multiple owners | Ownership conflict |
 | Broad adoption selectors | Accidentally adopting wrong objects |
 | Lying status | Not updating observedGeneration |
-| Ignoring 409 Conflicts | Not using retry logic or SSA |
-| Storing state in memory | Reconcile should be stateless |
-| Missing leader election | Multiple instances fighting |
-| Cross-namespace ownership | ownerReferences can't cross namespaces |
+
+All of these stem from misunderstanding reconciliation.
+
+---
+
+# Orphaning and Adopting Resources
+
+**Orphaning:** Resources without an owner (or owner deleted with `Orphan` policy)
+- Orphaned resources continue to exist but are no longer managed
+- Can cause resource leaks if not cleaned up manually
+
+**Adoption:** Controller claims ownership of existing resources
+- Done by adding `ownerReferences` to orphaned objects
+- Used by ReplicaSet to adopt matching Pods it didn't create
+
+**Dangers of adoption:**
+- Broad label selectors can accidentally adopt unrelated resources
+- Adopted resources get deleted when the owner is deleted
+- Multiple controllers fighting over the same resource
+
+---
+
+# Orphaning and Adopting Resources
+
+
+```yaml
+# A Pod can be adopted if its labels match and it has no controller owner
+metadata:
+  ownerReferences:
+    - apiVersion: apps/v1
+      kind: ReplicaSet
+      controller: true    # ← Only one controller owner allowed
+```
 
 ---
 
@@ -514,12 +398,10 @@ Leader election uses a Lease object in the cluster.
 
 1. **Reconcile state, not events** — always re-read current state
 2. **Be idempotent** — running twice should be safe
-3. **Be stateless** — don't store state between reconciles
-4. **Handle deletion first** — check `deletionTimestamp` early
-5. **Own cleanup** — finalizers must always be removable
-6. **Tell the truth** — status must reflect reality
-7. **Handle conflicts** — use retry logic or Server-Side Apply
-8. **Expect failure** — network, API server, your code will fail
+3. **Handle deletion first** — check `deletionTimestamp` early
+4. **Own cleanup** — finalizers must always be removable
+5. **Tell the truth** — status must reflect reality
+6. **Expect failure** — network, API server, your code will fail
 
 ---
 
@@ -527,12 +409,12 @@ Leader election uses a Lease object in the cluster.
 
 ```
 YAML → API Server → etcd → Watch → Informer → Queue → Reconcile
-                                                           ↓
-                                              Compare spec vs reality
-                                                           ↓
-                                              Make idempotent changes
-                                                           ↓
-                                              Update status
+                                                                     ↓
+                                                           Compare spec vs reality
+                                                                     ↓
+                                                           Make idempotent changes
+                                                                     ↓
+                                                              Update status
 ```
 
 You don't write event handlers.

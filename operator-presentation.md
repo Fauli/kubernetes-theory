@@ -294,24 +294,24 @@ API Server → Informer → Local Cache → Controller
 
 Controllers often need to react to changes in resources they don't own.
 
-**Example:** Reconcile your CRD when a referenced Secret changes.
+**Example:** Your CRD creates a Deployment. Update status when Pods become ready.
 
 ```go
-// In SetupWithManager
 ctrl.NewControllerManagedBy(mgr).
-    For(&myv1.MyCRD{}).
-    Watches(
-        &corev1.Secret{},
-        handler.EnqueueRequestsFromMapFunc(r.findCRDsForSecret),
+    For(&myv1.MyApp{}).
+    Owns(&appsv1.Deployment{}).  // Owned resources - auto-mapped
+    Watches(                      // Non-owned resources - manual mapping
+        &corev1.Pod{},
+        handler.EnqueueRequestsFromMapFunc(r.findAppsForPod),
     )
 
-func (r *Reconciler) findCRDsForSecret(ctx context.Context,
-    secret client.Object) []reconcile.Request {
-    // Return list of MyCRD objects that reference this secret
+func (r *Reconciler) findAppsForPod(ctx context.Context,
+    pod client.Object) []reconcile.Request {
+    // Find MyApp that owns the Deployment that owns this Pod
 }
 ```
 
-Essential for cross-resource dependencies.
+`Owns()` for direct children, `Watches()` for indirect dependencies.
 
 ---
 
@@ -347,12 +347,11 @@ Event: Pod A deleted     ┘
 # What Does This Code Do?
 
 ```go
-func (r *Reconciler) Reconcile(ctx context.Context,
-    req ctrl.Request) (ctrl.Result, error) {
+func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
     var cm corev1.ConfigMap
     if err := r.Get(ctx, req.NamespacedName, &cm); err != nil {
         if apierrors.IsNotFound(err) {
-            return ctrl.Result{}, nil
+           return ctrl.Result{}, nil
         }
         return ctrl.Result{}, err
     }
@@ -386,10 +385,11 @@ It must:
 
 Reconcile must tolerate retries and partial failure.
 
+<!-- 
 ---
 
 
-<!-- # Handling Conflicts
+# Handling Conflicts
 
 Concurrent updates cause `409 Conflict` errors. This is normal.
 

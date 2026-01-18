@@ -686,6 +686,63 @@ Note: This works because both `ApplicationNamespace` and `Namespace` are cluster
 
 ---
 
+# Phased Operator Example: Storage + KeyVault CMK
+
+**Scenario:** Create a StorageAccount, wait for its system-assigned identity, then use that identity to configure Customer Managed Keys on a KeyVault.
+
+```
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│  Phase 1        │     │  Phase 2        │     │  Phase 3        │
+│  Create Storage │ ──► │  Wait for       │ ──► │  Configure CMK  │
+│  Account with   │     │  Identity       │     │  with Identity  │
+│  SystemAssigned │     │  PrincipalId    │     │  on KeyVault    │
+└─────────────────┘     └─────────────────┘     └─────────────────┘
+       ▲                                                                   │
+       └───────────────── Requeue ─────────────────────┘
+```
+
+Each reconcile picks up where it left off - level-triggered!
+
+---
+
+# Phased Operator: The Code
+
+```go
+func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+    var app myv1.SecureStorage
+    if err := r.Get(ctx, req.NamespacedName, &app); err != nil {
+        return ctrl.Result{}, client.IgnoreNotFound(err)
+    }
+
+    // Phase 1: Ensure StorageAccount exists with SystemAssigned identity
+    sa, err := r.ensureStorageAccount(ctx, &app)
+    if err != nil {
+        return ctrl.Result{}, err
+    }
+
+    // Phase 2: Wait for Azure to provision the identity
+    if sa.Status.Identity == nil || sa.Status.Identity.PrincipalId == "" {
+        log.Info("waiting for storage account identity to be provisioned")
+        return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+    }
+
+    // Phase 3: Configure KeyVault access policy with the identity
+    if err := r.ensureKeyVaultAccess(ctx, &app, sa.Status.Identity.PrincipalId); err != nil {
+        return ctrl.Result{}, err
+    }
+
+    // Phase 4: Enable CMK on storage account
+    if err := r.enableCMK(ctx, sa, &app); err != nil {
+        return ctrl.Result{}, err
+    }
+
+    return ctrl.Result{}, nil
+}
+```
+
+Note: Key patterns here: (1) Each phase is idempotent - safe to re-run. (2) We return `RequeueAfter` when waiting for external state, not a tight loop. (3) Status checks gate progression - if identity isn't ready, we stop and wait. (4) On next reconcile, phases 1-2 are no-ops if already complete, we proceed to phase 3. This is level-triggered in action: we don't track "which phase we're on" - we compute it from observed state every time.
+
+---
 
 # Handling Conflicts
 

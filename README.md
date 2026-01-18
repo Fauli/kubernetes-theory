@@ -19,6 +19,17 @@ Opens the presentation at [http://localhost:1948](http://localhost:1948)
 | `demos/` | Live demo scripts for key concepts |
 | `images/` | Presentation images |
 
+## Additional Presentations (WIP)
+
+| File | Topic |
+|------|-------|
+| `crd-design.md` | CRD Design Patterns |
+| `testing-operators.md` | Testing Operators |
+| `debugging-operators.md` | Debugging Operators |
+| `admission-webhooks.md` | Admission Webhooks |
+
+These contain outlines with TODO placeholders for future content.
+
 ## Live Demos
 
 Run during the presentation to reinforce concepts:

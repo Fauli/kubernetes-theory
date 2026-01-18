@@ -84,6 +84,8 @@ API path:           /apis/apps/v1/namespaces/default/deployments
 
 Controllers and informers operate on **resources**, not kinds.
 
+Note: **How kubectl translates GVK → GVR:** When you run `kubectl apply -f deployment.yaml`, kubectl reads the `apiVersion` and `kind` from the YAML (GVK). It then queries the API server's discovery endpoint (`/apis/apps/v1`) which returns a list of all registered resource types including their `name` (plural), `kind`, and `verbs`. kubectl caches this in `~/.kube/cache/discovery/`. The RESTMapper uses this data to map `Kind: Deployment` → `Resource: deployments`, then constructs the REST path: `/apis/apps/v1/namespaces/default/deployments`. Run `kubectl api-resources` to see all Kind→Resource mappings the cluster supports (this is the discovery data, not instances you've created).
+
 ---
 
 # Object Identity and Metadata
@@ -599,6 +601,7 @@ Leader election uses a Lease object in the cluster.
 6. **Tell the truth** — status must reflect reality
 7. **Handle conflicts** — use retry logic or Server-Side Apply
 8. **Expect failure** — network, API server, your code will fail
+9. **Periodic sync** — by default, every 10h all resources get reconciled
 
 ---
 
@@ -626,6 +629,63 @@ You write a function that makes reality match intent.
 # Appendix
 
 ---
+
+# (Other) types of operators
+
+- Event-Driven (Watch-Based) Operators
+    - Reacts to kubernetes events
+- Time-Driven (Polling / RequeueAfter) Operators
+    - Runs periodically regardless of events 
+    - `Reconcile → RequeueAfter(30s) → Reconcile → …`
+- Hybrid Operators (Event + Time Driven)
+    - Event-driven for Kubernetes resources
+    - Time-driven for external dependencies
+- Step-Based / Phase-Driven Operators
+    - Spec or Status contains a “phase” field
+    - Reconcile advances phases step by step
+- One-Shot / Batch Operators
+    - Once and never more
+    - Migrations, cleanup, bootstrap
+
+<b>Reconcile must converge from any state to the desired state, regardless of how it was triggered.</b>
+
+---
+
+# Adoption Example: ApplicationNamespace
+
+**Scenario:** You have pre-existing Namespaces. You create a cluster-scoped `ApplicationNamespace` CRD to manage them.
+
+```go
+func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+    var appNs myv1.ApplicationNamespace
+    if err := r.Get(ctx, req.NamespacedName, &appNs); err != nil {
+        return ctrl.Result{}, client.IgnoreNotFound(err)
+    }
+
+    // Check if the namespace already exists
+    var ns corev1.Namespace
+    err := r.Get(ctx, client.ObjectKey{Name: appNs.Spec.NamespaceName}, &ns)
+
+    if apierrors.IsNotFound(err) {
+        // Create new namespace with ownership
+    }
+
+    // Namespace exists - adopt it if not already owned
+    if !metav1.IsControlledBy(&ns, &appNs) {
+        if err := ctrl.SetControllerReference(&appNs, &ns, r.Scheme); err != nil {
+            return ctrl.Result{}, err
+        }
+        return ctrl.Result{}, r.Update(ctx, &ns)  // Adds ownerReference
+    }
+
+    return ctrl.Result{}, nil
+}
+```
+
+Note: This works because both `ApplicationNamespace` and `Namespace` are cluster-scoped. The `ctrl.SetControllerReference` helper sets the ownerReference with `controller: true`. After adoption, deleting the ApplicationNamespace will garbage-collect the Namespace too - warn users about this behavior!
+
+---
+
 
 # Handling Conflicts
 

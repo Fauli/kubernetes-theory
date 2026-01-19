@@ -32,7 +32,6 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: ssa-demo
-  namespace: default
 data:
   a: "owned-by-manager-a"
 EOF
@@ -48,7 +47,6 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: ssa-demo
-  namespace: default
 data:
   b: "owned-by-manager-b"
 EOF
@@ -80,7 +78,6 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: ssa-demo
-  namespace: default
 data:
   a: "manager-b-tries-to-steal"
   b: "owned-by-manager-b"

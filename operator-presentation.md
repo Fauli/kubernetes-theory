@@ -420,41 +420,6 @@ Event: Pod A updated  → dirty: {A}, queue: [], processing: {A}  # Not queued!
 Worker done with A    → dirty: {}, queue: [A], processing: {}   # Re-queued
 ```
 
-Notes:
-  Line 1: Event: Pod A updated → dirty: {A}, queue: [A], processing: {}                     
-  - Add(A) is called                                                                        
-  - A added to dirty set                                                                    
-  - A not in processing, so also added to queue                                             
-                                                                                            
-  Line 2: Worker takes A → dirty: {}, queue: [], processing: {A}                            
-  - Get() is called                                                                         
-  - A removed from queue                                                                    
-  - A removed from dirty                                                                    
-  - A added to processing                                                                   
-                                                                                            
-  Line 3: Event: Pod A updated → dirty: {A}, queue: [], processing: {A}                     
-  - Add(A) is called again                                                                  
-  - A added to dirty set                                                                    
-  - A is in processing, so NOT added to queue                                               
-                                                                                            
-  Line 4: Worker done with A → dirty: {}, queue: [A], processing: {}                        
-  - Done(A) is called                                                                       
-  - A removed from processing                                                               
-  - Check: is A in dirty? Yes → so A is re-added to queue AND removed from dirty            
-                                                                                            
-  The answer: In line 4, Done() removes A from dirty when it re-queues it. This is the same 
-  behavior as Get() — when you move a key to the queue for processing, you clear its "dirty"
-   flag.                                                                                    
-                                                                                            
-  The example is correct, but the explanation could be clearer. The Done() logic is         
-  essentially:                                                                              
-  func (q *Queue) Done(key) {                                                               
-      q.processing.Delete(key)                                                              
-      if q.dirty.Has(key) {                                                                 
-          q.dirty.Delete(key)  // ← This is why dirty is empty in line 4                    
-          q.queue.Add(key)                                                                  
-      }                                                                                     
-  }    
 ---
 
 # Part 6: Writing Reconcile

@@ -4,6 +4,7 @@ PRESENTATIONS=(
     "operator-presentation.md:Kubernetes Operator Internals"
     "crd-design.md:CRD Design Patterns"
     "testing-operators.md:Testing Operators"
+    "azure-service-operator.md:Azure Service Operator v2 Deep Dive"
     "debugging-operators.md:Debugging Operators (WIP)"
     "admission-webhooks.md:Admission Webhooks (WIP)"
 )
@@ -24,8 +25,9 @@ if [[ -n "$1" ]]; then
         1|operator) FILE="operator-presentation.md" ;;
         2|crd) FILE="crd-design.md" ;;
         3|testing) FILE="testing-operators.md" ;;
-        4|debugging) FILE="debugging-operators.md" ;;
-        5|webhooks) FILE="admission-webhooks.md" ;;
+        4|aso) FILE="azure-service-operator.md" ;;
+        5|debugging) FILE="debugging-operators.md" ;;
+        6|webhooks) FILE="admission-webhooks.md" ;;
         *.md) FILE="$1" ;;
         *)
             echo "Unknown presentation: $1"
@@ -35,14 +37,15 @@ if [[ -n "$1" ]]; then
     esac
 else
     show_menu
-    read -p "Select presentation [1-5]: " choice
+    read -p "Select presentation [1-6]: " choice
 
     case "$choice" in
         1) FILE="operator-presentation.md" ;;
         2) FILE="crd-design.md" ;;
         3) FILE="testing-operators.md" ;;
-        4) FILE="debugging-operators.md" ;;
-        5) FILE="admission-webhooks.md" ;;
+        4) FILE="azure-service-operator.md" ;;
+        5) FILE="debugging-operators.md" ;;
+        6) FILE="admission-webhooks.md" ;;
         *)
             echo "Invalid selection"
             exit 1

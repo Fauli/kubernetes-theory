@@ -9,6 +9,7 @@ PRESENTATIONS=(
     "operator-presentation.md"
     "crd-design.md"
     "testing-operators.md"
+    "azure-service-operator.md"
     "debugging-operators.md"
     "admission-webhooks.md"
 )
@@ -41,11 +42,12 @@ else
         1|operator) FILE="operator-presentation.md" ;;
         2|crd) FILE="crd-design.md" ;;
         3|testing) FILE="testing-operators.md" ;;
-        4|debugging) FILE="debugging-operators.md" ;;
-        5|webhooks) FILE="admission-webhooks.md" ;;
+        4|aso) FILE="azure-service-operator.md" ;;
+        5|debugging) FILE="debugging-operators.md" ;;
+        6|webhooks) FILE="admission-webhooks.md" ;;
         *.md) FILE="$1" ;;
         *)
-            echo "Usage: $0 [all|operator|crd|testing|debugging|webhooks|<file.md>]"
+            echo "Usage: $0 [all|operator|crd|testing|aso|debugging|webhooks|<file.md>]"
             exit 1
             ;;
     esac

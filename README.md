@@ -19,10 +19,11 @@ Opens the presentation at [http://localhost:1948](http://localhost:1948)
 | 1 | `operator-presentation.md` | Kubernetes Operator Internals | Complete |
 | 2 | `crd-design.md` | CRD Design Patterns | Complete |
 | 3 | `testing-operators.md` | Testing Operators | Complete |
-| 4 | `debugging-operators.md` | Debugging Operators | Outline |
-| 5 | `admission-webhooks.md` | Admission Webhooks | Outline |
+| 4 | `azure-service-operator.md` | Azure Service Operator v2 Deep Dive | Complete |
+| 5 | `debugging-operators.md` | Debugging Operators | Outline |
+| 6 | `admission-webhooks.md` | Admission Webhooks | Outline |
 
-**Shortcuts:** `operator`, `crd`, `testing`, `debugging`, `webhooks`
+**Shortcuts:** `operator`, `crd`, `testing`, `aso`, `debugging`, `webhooks`
 
 ## Contents
 

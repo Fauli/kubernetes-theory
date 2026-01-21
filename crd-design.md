@@ -507,26 +507,7 @@ func (dst *DatabaseV1beta1) ConvertFrom(srcRaw conversion.Hub) error {
 }
 ```
 
----
-
-# Storage Version
-
-Only one version is stored in etcd:
-
-```yaml
-apiVersion: apiextensions.k8s.io/v1
-kind: CustomResourceDefinition
-spec:
-  versions:
-    - name: v1
-      served: true
-      storage: true   # ← This version is stored
-    - name: v1beta1
-      served: true
-      storage: false  # ← Converted on read/write
-```
-
-Changing storage version requires migration!
+Note: **Why Hub and Spoke?** Without it, supporting 3 versions (v1alpha1, v1beta1, v1) requires 6 conversion functions (v1alpha1↔v1beta1, v1beta1↔v1, v1alpha1↔v1). With 5 versions, you'd need 20 functions. Hub and Spoke fixes this: pick one version as the "hub" (typically the newest stable). All other versions ("spokes") only convert to/from the hub. Now 5 versions need only 8 functions (each spoke implements ConvertTo and ConvertFrom). The API server routes all conversions through the hub: v1alpha1→hub→v1beta1. The hub version's ConvertTo/ConvertFrom are no-ops since it's already in hub format.
 
 ---
 

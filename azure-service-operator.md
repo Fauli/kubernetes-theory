@@ -15,7 +15,7 @@
 **Traditional Azure provisioning:**
 ```
 Developer → Terraform/Bicep → Azure ARM → Resources
-                ↓
+                            ↓
          State file (where?)
          Drift detection (manual)
          No self-healing
@@ -24,7 +24,7 @@ Developer → Terraform/Bicep → Azure ARM → Resources
 **With ASO:**
 ```
 Developer → Kubernetes YAML → ASO Controller → Azure ARM → Resources
-                ↓
+                            ↓
          State in etcd (GitOps friendly)
          Continuous reconciliation
          Self-healing built-in
@@ -56,7 +56,7 @@ Azure ARM OpenAPI Specs
 ┌────────────────────────────────┐
 │  Go Types    │  CRD YAML       │
 │  (structs)   │  (schemas)      │
-│              │                 │
+│      -       │      -          │
 │  Conversion  │  Webhooks       │
 │  Functions   │  (validation)   │
 └────────────────────────────────┘
@@ -72,26 +72,15 @@ One generic reconciler handles ALL resource types.
 
 # High-Level Architecture
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                    Kubernetes Cluster                   │
-│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐  │
-│  │ StorageAcct │    │ ResourceGrp │    │   SQL DB    │  │
-│  │     CR      │    │     CR      │    │     CR      │  │
-│  └──────┬──────┘    └──────┬──────┘    └──────┬──────┘  │
-│         └──────────────────┼──────────────────┘         │
-│                            ▼                            │
-│                  ┌─────────────────┐                    │
-│                  │  ASO Controller │                    │
-│                  │   (generic)     │                    │
-│                  └────────┬────────┘                    │
-└───────────────────────────┼─────────────────────────────┘
-                            ▼
-                   ┌─────────────────┐
-                   │   Azure ARM     │
-                   │   REST API      │
-                   └─────────────────┘
-```
+| Layer | Components |
+|-------|------------|
+| **Custom Resources** | StorageAccount CR, ResourceGroup CR, SQL DB CR, ... |
+| **Controller** | ASO Generic Reconciler (one for all types) |
+| **External** | Azure ARM REST API |
+
+**Flow:** CR created → ASO Controller → ARM API → Azure Resource → Status updated on CR
+
+**Key insight:** One generic controller handles ALL Azure resource types.
 
 ---
 
@@ -123,19 +112,18 @@ Generated code provides type-specific `ConvertToARM()` and `UpdateStatusFromARM(
 # Controller Components
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                  ASO Controller Manager                 │
-├─────────────────────────────────────────────────────────┤
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐      │
-│  │  Generic    │  │  Credential │  │   ARM       │      │
-│  │  Reconciler │  │  Resolver   │  │   Client    │      │
-│  └─────────────┘  └─────────────┘  └─────────────┘      │
-│                                                         │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐      │
-│  │  Reference  │  │  Secret     │  │  Extension  │      │
-│  │  Resolver   │  │  Exporter   │  │  Handlers   │      │
-│  └─────────────┘  └─────────────┘  └─────────────┘      │
-└─────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────┐
+│                ASO Controller Manager                │
+├──────────────────────────────────────────────────────┤
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐   │
+│  │  Generic    │  │  Credential │  │   ARM       │   │
+│  │  Reconciler │  │  Resolver   │  │   Client    │   │
+│  └─────────────┘  └─────────────┘  └─────────────┘   │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐   │
+│  │  Reference  │  │  Secret     │  │  Extension  │   │
+│  │  Resolver   │  │  Exporter   │  │  Handlers   │   │
+│  └─────────────┘  └─────────────┘  └─────────────┘   │
+└──────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -271,7 +259,7 @@ ASO reconciles when:
 | Dependency ready | Unblock waiting resources |
 | Secret changed | Re-authenticate if needed |
 
-Default periodic sync: every 1 hour (configurable).
+periodic sync possible: i.e. every 1 hour or 10 hours (configurable).
 
 ---
 
@@ -301,14 +289,14 @@ The `owner` field creates a dependency and ownership relationship.
 
 ---
 
-# How References Work
+# How References Work 
 
 ```
-ResourceGroup CR ──────────────────────────────┐
-      │                                        │
-      │ owner                                  │ ownerReference
-      ▼                                        ▼
-StorageAccount CR ◄────────────────────────────┘
+ResourceGroup CR ──────────┐
+      │                    │
+      │ owner              │ ownerReference
+      ▼                    ▼
+StorageAccount CR ◄────────┘
       │
       │ ARM: /subscriptions/.../resourceGroups/my-rg
       ▼
@@ -343,26 +331,35 @@ If owner isn't ready, ASO waits and requeues.
 
 ---
 
-# Cross-Resource References
+# Chained Ownership
 
-Beyond owner, resources can reference each other:
+ARM resources form hierarchies. ASO mirrors this with chained `owner` references:
+
+```
+ResourceGroup → StorageAccount → BlobService → Container
+```
 
 ```yaml
-apiVersion: storage.azure.com/v1api20210401
+# Level 1: StorageAccount owned by ResourceGroup
+kind: StorageAccount
+spec:
+  owner:
+    name: my-rg
+
+# Level 2: BlobService owned by StorageAccount
 kind: StorageAccountsBlobService
 spec:
   owner:
-    name: mystorageacct
+    name: my-storage
 
----
-apiVersion: storage.azure.com/v1api20210401
+# Level 3: Container owned by BlobService
 kind: StorageAccountsBlobServicesContainer
 spec:
   owner:
-    name: mystorageacct-blobservice  # References blob service
+    name: my-storage-blobservice
 ```
 
-Creates a hierarchy matching ARM's resource structure.
+Each level waits for its parent to be Ready before provisioning.
 
 ---
 
@@ -436,14 +433,14 @@ stringData:
 Different namespaces can target different subscriptions:
 
 ```
-Namespace: team-a              Namespace: team-b
-    │                              │
-    ▼                              ▼
+Namespace: team-a              Namespace: team-b
+    │                              │
+    ▼                              ▼
 Secret: aso-credential         Secret: aso-credential
-  SUBSCRIPTION: sub-A            SUBSCRIPTION: sub-B
-    │                              │
-    ▼                              ▼
-Azure Subscription A           Azure Subscription B
+  SUBSCRIPTION: sub-A            SUBSCRIPTION: sub-B
+    │                              │
+    ▼                              ▼
+Azure Subscription A           Azure Subscription B
 ```
 
 Great for platform teams managing multiple environments.
@@ -603,25 +600,6 @@ spec:
 
 ---
 
-# Useful kubectl Commands
-
-```bash
-# See all ASO resources
-kubectl get resources.azure.com -A
-
-# Check resource status
-kubectl describe storageaccount mystorageacct
-
-# See ASO controller logs
-kubectl logs -n azureserviceoperator-system \
-  deployment/azureserviceoperator-controller-manager
-
-# Check conditions
-kubectl get storageaccount mystorageacct -o jsonpath='{.status.conditions}'
-```
-
----
-
 # Common Status Conditions
 
 | Condition | Meaning |
@@ -642,21 +620,21 @@ kubectl describe storageaccount mystorageacct
 
 ```
 Events:
-  Type     Reason                Age   Message
-  ----     ------                ----  -------
+  Type     Reason                Age   Message
+  ----     ------                ----  -------
   Normal   BeginCreateOrUpdate   1m    Starting async operation
   Normal   PollingComplete       30s   Operation completed
-  Normal   Ready                 30s   Resource is Ready
+  Normal   Ready                 30s   Resource is Ready
 ```
 
 Or for errors:
 
 ```
 Events:
-  Type     Reason       Age   Message
-  ----     ------       ----  -------
+  Type     Reason       Age   Message
+  ----     ------       ----  -------
   Warning  AzureError   10s   StorageAccountAlreadyTaken: The storage
-                              account named xxx is already taken.
+                              account named xxx is already taken.
 ```
 
 ---
@@ -680,25 +658,6 @@ spec:
 
 ---
 
-# GitOps Workflow
-
-```
-Git Repository
-    │
-    ├── base/
-    │   └── storage.yaml
-    │
-    └── overlays/
-        ├── dev/
-        │   └── kustomization.yaml  # dev subscription credential
-        └── prod/
-            └── kustomization.yaml  # prod subscription credential
-```
-
-ASO + GitOps (Flux/ArgoCD) = Declarative Azure infrastructure.
-
----
-
 # Resource Dependencies
 
 Always ensure proper ordering:
@@ -710,7 +669,6 @@ kind: ResourceGroup
 metadata:
   name: my-rg
 
----
 # 2. StorageAccount references ResourceGroup
 apiVersion: storage.azure.com/v1api20210401
 kind: StorageAccount

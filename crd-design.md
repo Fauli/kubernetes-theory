@@ -2,6 +2,8 @@
 ### Building APIs That Don't Suck
 #### A Guide for Operator Developers
 
+![Otterator CRD](images/otterator-crd.png)
+
 ---
 
 # Part 1: API Design Philosophy
